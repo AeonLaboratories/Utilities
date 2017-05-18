@@ -1,14 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text;
-using System.IO;
 using System.IO.Ports;
 using System.Threading;
 using System.Windows.Forms;
-using LibUsbDotNet;
-using LibUsbDotNet.DeviceNotify;
 using System.Xml.Serialization;
-
+using LibUsbDotNet.DeviceNotify;
 
 namespace Utilities
 {
