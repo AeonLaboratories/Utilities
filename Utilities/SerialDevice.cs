@@ -1,12 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Text;
-using System.IO;
 using System.IO.Ports;
+using System.Text;
 using System.Threading;
 using System.Windows.Forms;
-using LibUsbDotNet;
-using LibUsbDotNet.DeviceNotify;
 using System.Xml.Serialization;
 
 
@@ -21,7 +18,6 @@ namespace Utilities
         #region Fields
 
         USBSerialPort port;
-		IDeviceNotifier UsbDeviceNotifier = DeviceNotifier.OpenDeviceNotifier();
 
         Stopwatch txSw = new Stopwatch();
         Stopwatch rxSw = new Stopwatch();
@@ -113,7 +109,8 @@ namespace Utilities
 			txThread.Start();
 
 			Connect();
-			UsbDeviceNotifier.OnDeviceNotify += OnDeviceNotifyEvent;
+            SerialPortMonitor.PortArrived += OnPortConnected;
+            SerialPortMonitor.PortRemoved += OnPortRemoved;
 		}
 
 		void Connect()
@@ -150,19 +147,17 @@ namespace Utilities
 			//}
 		}
 
-		// Called whenever any USB device is connected or disconnected.
-		void OnDeviceNotifyEvent(object sender, DeviceNotifyEventArgs e)
-		{
-			string notifyingDevice = e.Object.ToString();
-			string thisDevice = "[Port Name:" + PortSettings.PortName + "] "; // note space at end
-			if (notifyingDevice == thisDevice)
-			{
-				if (e.EventType == EventType.DeviceArrival)
-					Connect();
-				else
-					Disconnect();
-			}
-		}
+        void OnPortConnected(string portName)
+        {
+            if (portName == PortSettings.PortName)
+                Connect();
+        }
+
+        void OnPortRemoved(string portName)
+        {
+            if (portName == PortSettings.PortName)
+                Disconnect();
+        }
 
 		public bool Command(string command)
 		{
