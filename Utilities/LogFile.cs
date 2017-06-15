@@ -1,7 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.IO;
 using System.Threading;
 using System.Windows.Forms;
@@ -97,7 +95,12 @@ namespace Utilities
 
         string recordedEntry = "";
         string culledTimestamp = "";
-        public void LogParsimoniously(string entry)
+		/// <summary>
+		/// Writes a one-line timestamp and entry to the log file if
+		/// the entry is not the same as the last entry.
+		/// </summary>
+		/// <param name="entry">Text to appear after the time stamp</param>
+		public void LogParsimoniously(string entry)
         {
             if (entry == recordedEntry)
                 culledTimestamp = TimeStamp();

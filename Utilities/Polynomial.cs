@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-
-namespace Utilities
+﻿namespace Utilities
 {
 	// The dynamic casting gyrations here are necessary because C#
 	// can't guarantee that any given operator is defined for T, and 

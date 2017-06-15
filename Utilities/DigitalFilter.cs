@@ -1,7 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Text;
 using System.Numerics;
 using System.Xml.Serialization;
 
@@ -19,9 +17,23 @@ namespace Utilities
 				return x;
 		}
 
+		// Reset the filter if x differs from Value by StepChange or more.
+		// Set higher than noise floor, at least. 0 disables the filter.
+		public double StepChange { get; set; } = double.PositiveInfinity;
+		public bool IsStepChange(double x) { return (Math.Abs(x - Value) >= StepChange); }
+
 		[XmlIgnore] public virtual double Value { get; set; }
-		public virtual void Initialize(double value) { Value = value; }
-		public virtual double Update(double x) { return x; }
+		[XmlIgnore] public virtual bool Initialized { get; protected set; } = false;
+		public virtual double Initialize(double value) { Value = value; Initialized = true; return Value; }
+		public virtual double Filter(double value) { Value = value; return Value; }
+		public virtual double Update(double value)
+		{
+			if (!Initialized || IsStepChange(value))
+				return Initialize(value);
+			else
+				return Filter(value);
+		}
+
 	}
 
 	public class AveragingFilter : DigitalFilter
@@ -47,8 +59,8 @@ namespace Utilities
 		public AveragingFilter(double stability)
 		{ Stability = stability; }
 
-		public override double Update(double x)
-		{ return Value = Value * oldCoeff + x * newCoeff; }
+		public override double Filter(double value)
+		{ return Value = Value * oldCoeff + value * newCoeff; }
 	}
 
 	public class ButterworthFilter : DigitalFilter
@@ -88,7 +100,7 @@ namespace Utilities
 			CutoffFrequency = cutoff_frequency;
 		}
 
-		public override void Initialize(double value)
+		public override double Initialize(double value)
 		{
 			if (SamplingFrequency <= 0)
 				throw new DivideByZeroException();
@@ -107,14 +119,14 @@ namespace Utilities
 			lastIndex = Order - 1;
 			next = lastIndex;
 
-			base.Initialize(value);
-
 			double x = Gain * value;
 			for (int i = 0; i < Order; ++i)
 			{
 				X[i] = x;
 				Y[i] = value;
 			}
+
+			return base.Initialize(value);
 		}
 
 		List<Complex> all_minus_ones(int n)
@@ -127,7 +139,7 @@ namespace Utilities
 		// On entering this function, next points to latest (most recently
 		// received) x and y values. Decrementing next <Order> times will 
 		// leave next pointing to the oldest values.
-		public override double Update(double x)
+		public override double Filter(double x)
 		{
 			x *= Gain;
 			double filtered = Cx[0] * x;
@@ -142,8 +154,7 @@ namespace Utilities
 			Y[next] = filtered;
 			// now, next points to latest x and y values
 
-			Value = filtered;
-			return Value;
+			return Value = filtered;
 		}
 
 

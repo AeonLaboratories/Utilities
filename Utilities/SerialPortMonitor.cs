@@ -69,10 +69,10 @@ namespace Utilities
             }
         }
 
-        public static void CleanUp()
-        {
-            portArrivalWatcher.Stop();
-            portRemovalWatcher.Stop();
-        }
-    }
+		public static void Stop()
+		{
+			portArrivalWatcher?.Stop();
+			portRemovalWatcher?.Stop();
+		}
+	}
 }

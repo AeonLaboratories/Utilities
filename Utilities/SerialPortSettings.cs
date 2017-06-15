@@ -1,9 +1,4 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Text;
-using System.IO;
-using System.IO.Ports;
-using System.Threading;
+﻿using System.IO.Ports;
 using System.Xml.Serialization;
 
 namespace Utilities

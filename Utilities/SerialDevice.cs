@@ -1,11 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO.Ports;
 using System.Text;
+using System.IO.Ports;
 using System.Threading;
 using System.Windows.Forms;
 using System.Xml.Serialization;
-
 
 namespace Utilities
 {
@@ -143,6 +142,7 @@ namespace Utilities
 			//{
 				port.Close();
 				port.Dispose();
+				port = null;
 				Disconnected = true;
 			//}
 		}
