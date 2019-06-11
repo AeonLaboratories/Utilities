@@ -2,3 +2,5 @@
 Utilities/bin/
 Utilities/obj/
 Utilities/LibUsbDotNet.dll
+/bin
+/obj

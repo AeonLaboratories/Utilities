@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -6,9 +7,11 @@ using System.Xml.Serialization;
 
 namespace Utilities
 {
+	[JsonObject(MemberSerialization.OptIn)]
 	public class Operation
 	{
 		[XmlAttribute]
+		[JsonProperty(Order = -99)]
 		public string Name { get; set; }
 
 		public virtual double Execute(double input)
@@ -22,6 +25,7 @@ namespace Utilities
 		[XmlElement(typeof(OperationSet))]
 		[XmlElement(typeof(Arithmetic))]
 		[XmlElement(typeof(Lookup))]
+		[JsonProperty]
 		public List<Operation> Operations { get; set; }
 
 		public OperationSet() { Operations = new List<Operation>(); }
@@ -48,6 +52,7 @@ namespace Utilities
 	public class Lookup : Operation
 	{
 		[XmlText]
+		[JsonProperty]
 		public string Argument { get { return getArgument(); } set { setArgument(value); } }
 
 		LookupTable table;
@@ -113,6 +118,7 @@ namespace Utilities
 
 		string _formula = "";
 		[XmlText]
+		[JsonProperty]
 		public string Argument { get { return getArgument(); } set { setArgument(value); } }
 
 		bool _inputFirst = true;

@@ -33,7 +33,7 @@ namespace Utilities
 			if (Stack.Count > 0)
 				CurrentStep = Stack.Pop();
 			else if (CurrentStep == null)
-				MessageBox.Show(Name + " Push/Pop mismatch");
+				Notice.Send(Name + " Push/Pop mismatch");
 			else
 				CurrentStep = null;
 		}

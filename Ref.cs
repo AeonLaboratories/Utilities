@@ -22,7 +22,7 @@ namespace Utilities
 	{
 		int y = 123;
 		Ref<int> x = new Ref<int>(()=>y, v=>{y=v;});
-	    int z = x.Value;		// now, z == 123
+		int z = x.Value;		// now, z == 123
 		x.Value = 456;			// now, y == 456
 	}
 	*/

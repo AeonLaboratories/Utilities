@@ -8,8 +8,31 @@ using System.Collections;
 namespace Utilities
 {
 	public class Utility
-    {
-		public static string[] lineTerminators = new string[] { "\r\n", "\n" };
+	{
+        // ASCII uses only 7 bits; use this 8-bit "extended ASCII" encoding
+        public static Encoding ASCII8Encoding = Encoding.GetEncoding("iso-8859-1");
+
+        public static byte[] ToByteArray(string s)
+        { return ASCII8Encoding.GetBytes(s); }
+
+        // TODO: remove this if it does the same thing as byteArray.ToString();
+        public static string ByteArrayToString(byte[] byteArray)
+        {
+            if (byteArray == null) return "";
+            return ByteArrayToString(byteArray, 0, byteArray.Length);
+        }
+
+        public static string ByteArrayToString(byte[] byteArray, int startIndex, int length)
+        {
+            if (byteArray == null || startIndex < 0 || length < 0 || startIndex >= byteArray.Length)
+                return "";
+            StringBuilder sb = new StringBuilder(length);
+            for (int i = startIndex, n = 0; n < length; i++, n++)
+                sb.Append((char)byteArray[i]);
+            return sb.ToString();
+        }
+
+        public static string[] lineTerminators = new string[] { "\r\n", "\n" };
 
 		public static string[] SplitIntoLines(string s)
 		{ return s.Split(lineTerminators, StringSplitOptions.None); }
@@ -64,37 +87,63 @@ namespace Utilities
 		{ return ToStringLine(name, value ? "Yes" : "No"); }
 
 
+        /// <summary>
+        /// Rounds a number n rounded to s significant digits.
+        /// </summary>
+        /// <param name="n">The number to round</param>
+        /// <param name="s">Significant digits to keep</param>
+        /// <returns></returns>
+        public static double Significant(double n, int s)
+        {
+            if (n == 0) return 0;
+            double magnitude = Math.Pow(10, s - PowerOfTenCeiling(n));
+            return Math.Round(n * magnitude) / magnitude;
+        }
+
+        /// <summary>
+        /// Returns the ceiling of the base 10 logarithm of the absolute value of n, or 0 if n = 0.
+        /// It's a useful indication of "order of magnitude".
+        /// </summary>
+        /// <param name="n"></param>
+        /// <returns></returns>
+        public static int PowerOfTenCeiling(double n)
+        {
+            if (n == 0) return 0;
+            if (n < 0) n = -n;
+            return (int)Math.Ceiling(Math.Log10(n));
+        }
+
         // Returns a format string for representing a number n rounded to s significant digits.
-		public static string sigDigitsString(double n, int s)
-        {
-            string pformat = "0." + new string('0', s - 1);
-            string n1 = n.ToString(pformat + "e+00");
-            int e = int.Parse(n1.Substring(n1.Length - 3)); // get the exponent
+        public static string sigDigitsString(double n, int s)
+		{
+			string pformat = "0." + new string('0', s - 1);
+			string n1 = n.ToString(pformat + "e+00");
+			int e = int.Parse(n1.Substring(n1.Length - 3)); // get the exponent
 
-            if (e >= Math.Max(s, 3) || e <= -2)
-                return n.ToString(pformat + "e-0");
-            else
-            {
-                pformat += "0"; // extra zero in case needed left of decimal point
-                int len = 1 + s - e; if (len == 2) len = 1;
-                return n.ToString(pformat.Substring(0, len));
-            }
-        }
+			if (e >= Math.Max(s, 3) || e <= -2)
+				return n.ToString(pformat + "e-0");
+			else
+			{
+				pformat += "0"; // extra zero in case needed left of decimal point
+				int len = 1 + s - e; if (len == 2) len = 1;
+				return n.ToString(pformat.Substring(0, len));
+			}
+		}
 
-        //calculates the binomial coefficient "n choose k"
+		//calculates the binomial coefficient "n choose k"
 		public static double binomCoeff(int n, int k)
-        {
-            if (n < 0 || k < 0) return 0;
-            if (k > n) return 0;
-            if (k > n / 2) k = n - k;
-            double r = 1;
-            for (int d = 1; d <= k; d++)
-            {
-                r *= n--;
-                r /= d;
-            }
-            return r;
-        }
+		{
+			if (n < 0 || k < 0) return 0;
+			if (k > n) return 0;
+			if (k > n / 2) k = n - k;
+			double r = 1;
+			for (int d = 1; d <= k; d++)
+			{
+				r *= n--;
+				r /= d;
+			}
+			return r;
+		}
 
 		public static string xmlAttribute(string attr, string value)
 		{
@@ -175,7 +224,7 @@ namespace Utilities
 		{
 			return typeof(IList).IsAssignableFrom(o.GetType());
 		}
-    }
+	}
 
 	public struct ObjectPair
 	{
@@ -204,65 +253,65 @@ namespace Utilities
 	}
 
 
-    public class LookupTable
-    {
+	public class LookupTable
+	{
 		public string filename;
 
-        public double[] key;
-        public double[] value;
+		public double[] key;
+		public double[] value;
 		public int count { get; set; }
 		public bool outOfRange { get; set; }
 
-        public LookupTable(string filename)
-        { load(filename); }
+		public LookupTable(string filename)
+		{ load(filename); }
 
-        void load(string filename)
-        {
-            StreamReader fin;
-            try { fin = new StreamReader(filename); }
-            catch
-            {
-                throw new Exception("Couldn't open '" + filename + "'");
-            }
+		void load(string filename)
+		{
+			StreamReader fin;
+			try { fin = new StreamReader(filename); }
+			catch
+			{
+				throw new Exception("Couldn't open '" + filename + "'");
+			}
 			this.filename = filename;
 
-            int nLines = 0;
-            string line = fin.ReadLine();
-            while (line != null)
-            {
-                ++nLines;
-                line = fin.ReadLine();
-            }
+			int nLines = 0;
+			string line = fin.ReadLine();
+			while (line != null)
+			{
+				++nLines;
+				line = fin.ReadLine();
+			}
 
-            count = nLines;
-            key = new double[count];
-            value = new double[count];
+			count = nLines;
+			key = new double[count];
+			value = new double[count];
 
-            fin.DiscardBufferedData();
-            fin.BaseStream.Seek(0, SeekOrigin.Begin);
+			fin.DiscardBufferedData();
+			fin.BaseStream.Seek(0, SeekOrigin.Begin);
 
-            char[] delimiters = { '\t' };
-            string[] token;
-            int i = 0;
-            line = fin.ReadLine();
-            while (line != null)
-            {
-                token = line.Split(delimiters);
-                key[i] = double.Parse(token[0]);
-                value[i] = double.Parse(token[1]);
-                ++i;
-                line = fin.ReadLine();
-            }
-            fin.Close();
-        }
+			char[] delimiters = { '\t' };
+			string[] token;
+			int i = 0;
+			line = fin.ReadLine();
+			while (line != null)
+			{
+				token = line.Split(delimiters);
+				key[i] = double.Parse(token[0]);
+				value[i] = double.Parse(token[1]);
+				++i;
+				line = fin.ReadLine();
+			}
+			fin.Close();
+		}
 
-        public double Interpolate(double d)
+		public double Interpolate(double d)
 		{
 			if (d < key[0] || d > key[count - 1])
-            {
-                outOfRange = true; 
-                return d;
-            }
+			{
+				outOfRange = true; 
+				return d;
+			}
 			outOfRange = false;
 			int i = Array.BinarySearch(key, d);
 			if (i >= 0) return value[i];
@@ -270,5 +319,5 @@ namespace Utilities
 			return value[i - 1] + (d - key[i - 1]) * (value[i] - value[i - 1]) / (key[i] - key[i - 1]);				
 		}
 
-    }
+	}
 }
