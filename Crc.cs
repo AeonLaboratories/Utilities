@@ -8,28 +8,37 @@ namespace Utilities
 	[JsonObject(MemberSerialization.OptIn)]
 	public class CrcOptions
 	{
-		[JsonProperty]
-		public UInt16 InitialValue { get; set; }    // Pre-Invert; i.e., start with 0xFFFF instead of 0
-		[JsonProperty]
-		public UInt16 Polynomial { get; set; }
-		[JsonProperty]
-		public UInt16 ExpectedResidue { get; set; }
+        // To pre-Invert, start with 0xFFFF instead of 0
+        [JsonProperty, DefaultValue(0xFFFF)]
+        public UInt16 InitialValue { get; set; } = 0xFFFF;
 
-		[JsonProperty]
-		public bool PostInvert { get; set; }
+        // see Aeon CRC notes
+        [JsonProperty, DefaultValue(0xDAAE)]
+        public UInt16 Polynomial { get; set; } = 0xDAAE;
+
+        // Residue, residual, remainder: what we should get if the
+        // CRC matches the message.
+        [JsonProperty, DefaultValue(0x820)]
+        public UInt16 ExpectedResidue { get; set; } = 0x820;
+
+
+        [JsonProperty, DefaultValue(true)]
+        public bool PostInvert { get; set; } = true;
 
 		// RS-232 and IEEE-802 (Ethernet) communications specify lsb-first transmission.
 		// Other protocols, such as hard-disk standards and XMODEM, are big-endian; data is
 		// sent msb first;
-		[JsonProperty]//, DefaultValue(false)]
+		[JsonProperty, DefaultValue(false)]
 		public bool MsBitFirst { get; set; }
-		[JsonProperty]//, DefaultValue(false)]
+
+		[JsonProperty, DefaultValue(false)]
 		public bool MsByteFirst { get; set; }
 
-		// termination character, or deliminter. 0x03 is ETX (end of transmission)
-		[JsonProperty]
-		public byte TermChar { get; set; }
-		[JsonProperty]//, DefaultValue(false)]
+        // termination character, or deliminter. 0x03 is ETX (end of transmission)
+        [JsonProperty, DefaultValue(0x03)]
+        public byte TermChar { get; set; } = 0x03;
+
+		[JsonProperty, DefaultValue(false)]
 		public bool OmitTermChar { get; set; }
 
 		public CrcOptions() : this(0xFFFF, 0xDAAE, 0x82C0, true, false, false, 3, false) { }
@@ -43,7 +52,7 @@ namespace Utilities
 			ExpectedResidue = residue;
 			PostInvert = postInvert;
 			MsBitFirst = msBitFirst;
-			msByteFirst = MsByteFirst;
+			MsByteFirst = msByteFirst;
 			TermChar = termchar;
 			OmitTermChar = omitTermChar;
 		}
@@ -54,17 +63,17 @@ namespace Utilities
 	{
 		public CrcOptions Options 
 		{
-			get { return _Options; }
-			set { _Options = value; Init(); }
+			get { return options; }
+			set { options = value; Init(); }
 		}
-		CrcOptions _Options;
+		CrcOptions options;
 
 		public UInt16 Code => remainder;
 		UInt16 remainder;
 
 
 		public Crc() { }
-		public Crc(CrcOptions options) { _Options = options; }
+		public Crc(CrcOptions options) { this.options = options; }
 		public Crc(string s) { Update(s); }
 
 
@@ -75,7 +84,7 @@ namespace Utilities
 			else
 				remainder = Options.InitialValue; 
 		}
-		public bool Good() { return Options != null && remainder == Options.ExpectedResidue; }
+		public bool Good() => Options != null && remainder == Options.ExpectedResidue;
 
 		public UInt16 Update( byte b )
 		{

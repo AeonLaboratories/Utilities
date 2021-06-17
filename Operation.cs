@@ -3,14 +3,13 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
-using System.Xml.Serialization;
 
 namespace Utilities
 {
 	[JsonObject(MemberSerialization.OptIn)]
 	public class Operation
 	{
-		[XmlAttribute]
+		
 		[JsonProperty(Order = -99)]
 		public string Name { get; set; }
 
@@ -22,9 +21,6 @@ namespace Utilities
 
 	public class OperationSet : Operation
 	{
-		[XmlElement(typeof(OperationSet))]
-		[XmlElement(typeof(Arithmetic))]
-		[XmlElement(typeof(Lookup))]
 		[JsonProperty]
 		public List<Operation> Operations { get; set; }
 
@@ -51,7 +47,6 @@ namespace Utilities
 
 	public class Lookup : Operation
 	{
-		[XmlText]
 		[JsonProperty]
 		public string Argument { get { return getArgument(); } set { setArgument(value); } }
 
@@ -116,33 +111,33 @@ namespace Utilities
 
 		private string inputSymbol = "x";
 
-		string _formula = "";
-		[XmlText]
+		string formula = "";
+
 		[JsonProperty]
 		public string Argument { get { return getArgument(); } set { setArgument(value); } }
 
-		bool _inputFirst = true;
-		[XmlIgnore]
+		bool inputFirst = true;
+		
 		public bool InputFirst
 		{
-			get { return _inputFirst; }
-			set { _inputFirst = value; updateFormula(); compile(); }
+			get { return inputFirst; }
+			set { inputFirst = value; updateFormula(); compile(); }
 		}
 
 		Operators _operator = Operators.None;
-		[XmlIgnore]
+		
 		public Operators Operator
 		{
 			get { return _operator; }
 			set { _operator = value; updateFormula(); compile(); }
 		}
 
-		double _operand;
-		[XmlIgnore]
+		double operand;
+		
 		public double Operand
 		{
-			get { return _operand; }
-			set { _operand = value; updateFormula(); }
+			get { return operand; }
+			set { operand = value; updateFormula(); }
 		}
 
 		Func<double, double, double> exec;
@@ -156,18 +151,18 @@ namespace Utilities
 
 		public override double Execute(double input)
 		{
-			try { return exec(input, _operand); }
+			try { return exec(input, operand); }
 			catch { return input; }
 		}
 
 		string getArgument()
 		{
-			return _formula;
+			return formula;
 		}
 
 		void setArgument(string value)
 		{
-			_formula = value;
+			formula = value;
 			parseProperties();
 			compile();
 			updateFormula();
@@ -176,18 +171,18 @@ namespace Utilities
 		void updateFormula()
 		{
 			if (_operator == Operators.Ln)
-				_formula = Arithmetic.OperatorSymbol(_operator) + "(" + inputSymbol + ")";
+				formula = Arithmetic.OperatorSymbol(_operator) + "(" + inputSymbol + ")";
 			else if (_operator == Operators.Log)
 			{
-				_formula = Arithmetic.OperatorSymbol(_operator) + (_inputFirst ? _operand.ToString() : inputSymbol) + "(" + (_inputFirst ? inputSymbol : _operand.ToString()) + ")";
+				formula = Arithmetic.OperatorSymbol(_operator) + (inputFirst ? operand.ToString() : inputSymbol) + "(" + (inputFirst ? inputSymbol : operand.ToString()) + ")";
 			}
-			else if (_operator == Operators.Add && _operand < 0)
+			else if (_operator == Operators.Add && operand < 0)
 			{
-				_formula = inputSymbol + OperatorSymbol(Operators.Subtract) + Math.Abs(_operand);
+				formula = inputSymbol + OperatorSymbol(Operators.Subtract) + Math.Abs(operand);
 			}
 			else
 			{
-				_formula = (_inputFirst ? inputSymbol : _operand.ToString()) + OperatorSymbol(_operator) + (_inputFirst ? _operand.ToString() : inputSymbol);
+				formula = (inputFirst ? inputSymbol : operand.ToString()) + OperatorSymbol(_operator) + (inputFirst ? operand.ToString() : inputSymbol);
 			}
 		}
 
@@ -195,7 +190,7 @@ namespace Utilities
 		{
 			try
 			{
-				string toParse = _formula.ToLower().Replace("(", "").Replace(")", "");
+				string toParse = formula.ToLower().Replace("(", "").Replace(")", "");
 
 				if (toParse.StartsWith("ln"))
 				{
@@ -207,7 +202,7 @@ namespace Utilities
 					toParse = toParse.Replace("log", "");
 
 					if (toParse.StartsWith(inputSymbol))
-						_inputFirst = false;
+						inputFirst = false;
 					toParse = toParse.Replace(inputSymbol, "");
 				}
 				else
@@ -222,7 +217,7 @@ namespace Utilities
 					}
 					else
 					{
-						_inputFirst = false;
+						inputFirst = false;
 						_operator = ParseOperator(toParse.Last().ToString());
 						toParse = toParse.Remove(toParse.Length - 1);
 					}
@@ -230,11 +225,11 @@ namespace Utilities
 
 				try
 				{
-					_operand = double.Parse(toParse);
-					if (_operator == Operators.Subtract && _inputFirst)
+					operand = double.Parse(toParse);
+					if (_operator == Operators.Subtract && inputFirst)
 					{
 						_operator = Operators.Add;
-						_operand = -_operand;
+						operand = -operand;
 					}
 				}
 				catch { }
@@ -249,8 +244,8 @@ namespace Utilities
 
 			ParameterExpression input = Expression.Parameter(typeof(double), "input");
 			ParameterExpression operand = Expression.Parameter(typeof(double), "operand");
-			ParameterExpression left = _inputFirst ? input : operand;
-			ParameterExpression right = _inputFirst ? operand : input;
+			ParameterExpression left = inputFirst ? input : operand;
+			ParameterExpression right = inputFirst ? operand : input;
 
 			Expression execute = null;
 

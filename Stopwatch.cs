@@ -1,6 +1,5 @@
 ﻿using Newtonsoft.Json;
 using System;
-using System.Xml.Serialization;
 
 namespace Utilities
 {
@@ -8,7 +7,6 @@ namespace Utilities
 	/// Extends System.Diagnostics.Stopwatch to include Accumulated and Longest
 	/// elapsed times.
 	/// </summary>
-	[XmlType("Utility.Stopwatch")]	// because the name conflicts with System.Diagnostics.Stopwatch
 	[JsonObject(MemberSerialization.OptIn)]
 	public class Stopwatch : System.Diagnostics.Stopwatch
 	{
@@ -34,25 +32,25 @@ namespace Utilities
 		[JsonProperty] public long Accumulated
 		{
 			get { return ElapsedMilliseconds; }
-			set { _Accumulated = value; } 
+			set { accumulated = value; } 
 		}
-		long _Accumulated;
+		long accumulated;
 
 		/// <summary>
 		/// Gets or sets the longest time interval (in milliseconds) measured by 
 		/// the current instance.
 		/// </summary>
-		[XmlIgnore] public long Longest
+		public long Longest
 		{
-			get { UpdateLongest(); return _Longest; }
-			set { _Longest = value; }
+			get { UpdateLongest(); return longest; }
+			set { longest = value; }
 		}
-		long _Longest = 0;
+		long longest = 0;
 
 		void UpdateLongest()
 		{
 			long t = ElapsedMilliseconds;
-			if (t > _Longest) _Longest = t;
+			if (t > longest) longest = t;
 		}
 
 		/// <summary>
@@ -71,7 +69,7 @@ namespace Utilities
 		{
 			Stop();
 			base.Reset();
-			_Accumulated = 0;			
+			accumulated = 0;			
 		}
 
 		/// <summary>
@@ -91,7 +89,7 @@ namespace Utilities
 		///	A read-only System.TimeSpan representing the total elapsed time measured
 		///	by the current instance.
 		/// </returns>
-		public new TimeSpan Elapsed => base.Elapsed.Add(TimeSpan.FromMilliseconds(_Accumulated));
+		public new TimeSpan Elapsed => base.Elapsed.Add(TimeSpan.FromMilliseconds(accumulated));
 
 		/// <summary>
 		///	Gets the total elapsed time measured by the current instance, in milliseconds.
@@ -100,7 +98,7 @@ namespace Utilities
 		///	A read-only long integer representing the total number of milliseconds measured
 		///	by the current instance.
 		/// </returns>
-		public new long ElapsedMilliseconds => base.ElapsedMilliseconds + _Accumulated;
+		public new long ElapsedMilliseconds => base.ElapsedMilliseconds + accumulated;
 
 		/// <summary>
 		///	Gets the total elapsed time measured by the current instance, in timer ticks.
@@ -109,7 +107,7 @@ namespace Utilities
 		///	A read-only long integer representing the total number of timer ticks measured
 		///	by the current instance.
 		/// </returns>
-		public new long ElapsedTicks => base.ElapsedTicks + Frequency * _Accumulated * 1000;
+		public new long ElapsedTicks => base.ElapsedTicks + Frequency * accumulated * 1000;
 
 		/// <summary>
 		///	Initializes a new Utilities.Stopwatch instance, sets the elapsed

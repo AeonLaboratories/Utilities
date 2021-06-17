@@ -4,71 +4,57 @@ using System.Text;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Collections;
+using System.Linq;
+using System.Threading;
 
 namespace Utilities
 {
+	// TODO: move as many as possible of these to extension classes
 	public class Utility
 	{
-        // ASCII uses only 7 bits; use this 8-bit "extended ASCII" encoding
-        public static Encoding ASCII8Encoding = Encoding.GetEncoding("iso-8859-1");
-
-        public static byte[] ToByteArray(string s)
-        { return ASCII8Encoding.GetBytes(s); }
-
-        // TODO: remove this if it does the same thing as byteArray.ToString();
-        public static string ByteArrayToString(byte[] byteArray)
-        {
-            if (byteArray == null) return "";
-            return ByteArrayToString(byteArray, 0, byteArray.Length);
-        }
-
-        public static string ByteArrayToString(byte[] byteArray, int startIndex, int length)
-        {
-            if (byteArray == null || startIndex < 0 || length < 0 || startIndex >= byteArray.Length)
-                return "";
-            StringBuilder sb = new StringBuilder(length);
-            for (int i = startIndex, n = 0; n < length; i++, n++)
-                sb.Append((char)byteArray[i]);
-            return sb.ToString();
-        }
-
         public static string[] lineTerminators = new string[] { "\r\n", "\n" };
 
 		public static string[] SplitIntoLines(string s)
 		{ return s.Split(lineTerminators, StringSplitOptions.None); }
 		
-		public static string byte_string(string s)
-		{
-			StringBuilder sb = new StringBuilder();
-			foreach (byte b in s)
-			{
-				sb.Append(b.ToString("X2"));
-				sb.Append(" ");
-			}
-			return sb.ToString().TrimEnd();
-		}
+        // conversions for MSB-first 2-byte sequences, often encountered in serial communications
+        public static int toInt(string s, int msbIndex) => toInt(s[msbIndex], s[msbIndex + 1]);
+        public static int toInt(string s, int msbIndex, int lsbIndex) => toInt(s[msbIndex], s[lsbIndex]);
+        public static int toInt(char[] msbLsb) => toInt(msbLsb[0], msbLsb[1]);
+        public static int toInt(char msb, char lsb) => (msb << 8) | lsb;
+        public static char[] MSBLSB(int i) => new char[] { MSB(i), LSB(i) };
+        public static char LSB(int i) => (char)(i & 0xFF);
+        public static char MSB(int i) => (char)((i >> 8) & 0xFF);
 
-		// assumes the processor architecture is little-endian
-		// assumes exactly 2 bytes are to be converted
-		// assumes s contains bytes at MSBIndex and MSBIndex + 1
-		public static Int16 getMSBFirstInt16(string s, int MSBindex)
-		{
-			byte[] ba = new byte[2];
-			ba[0] = (byte)s[MSBindex + 1];
-			ba[1] = (byte)s[MSBindex];
+		/// <summary>
+		/// Returns a string like "5.2 minutes" or "1 second".
+		/// </summary>
+		/// <param name="howmany"></param>
+		/// <param name="singularUnit"></param>
+		/// <returns></returns>
+		public static string ToUnitsString(double howmany, string singularUnit) =>
+			 $"{howmany} {singularUnit.Plurality(howmany)}";
 
-			return BitConverter.ToInt16(ba, 0);
-		}
+		public static string MinutesString(int minutes) =>
+			ToUnitsString(minutes, "minute");
+		public static string SecondsString(int seconds) =>
+			ToUnitsString(seconds, "second");
 
 		public static string IndentLines(string text, string indent)
 		{
-			string indented = "";
 			string[] lines = SplitIntoLines(text);
-			int n = lines.Length;
-			if (n < 1) return "";
-			for (int i = 0; i < n - 1; i++)
-				indented += indent + lines[i] + "\r\n";
-			return indented + indent + lines[n-1];
+			int last = lines.Length - 1;
+			if (last < 0) return "";
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < last; i++)
+            {
+                sb.Append(indent);
+                sb.Append(lines[i]);
+                sb.Append("\r\n");
+            }
+            sb.Append(indent);
+            sb.Append(lines[last]);
+            return sb.ToString();
 		}
 
 		public static string IndentLines(string text)
@@ -144,6 +130,26 @@ namespace Utilities
 			}
 			return r;
 		}
+
+
+		/// <summary>
+		/// Waits a potentially limited time for a condition to be true.
+		/// The default timeout value of -1 is infinite.
+		/// The condition is tested every &lt;interval&gt; milliseconds.
+		/// </summary>
+		/// <param name="checkCondition">what to test</param>
+		/// <param name="timeout">total milliseconds to wait before giving up</param>
+		/// <param name="interval">milliseconds between tests</param>
+		/// <returns>true if the condition is met, false if it timed out</returns>
+		public static bool WaitForCondition(Func<bool> checkCondition, int timeout = -1, int interval = 20)
+		{
+			var startTime = DateTime.Now;
+			bool conditionMet;
+			while (!(conditionMet = checkCondition()) && (timeout < 0 || (DateTime.Now - startTime).TotalMilliseconds < timeout))
+				Thread.Sleep(interval);
+			return conditionMet;
+		}
+
 
 		public static string xmlAttribute(string attr, string value)
 		{
@@ -252,7 +258,6 @@ namespace Utilities
 		}
 	}
 
-
 	public class LookupTable
 	{
 		public string filename;
@@ -269,8 +274,9 @@ namespace Utilities
 		{
 			StreamReader fin;
 			try { fin = new StreamReader(filename); }
-			catch
+			catch (Exception e)
 			{
+				Notice.Send(e.Message);
 				throw new Exception("Couldn't open '" + filename + "'");
 			}
 			this.filename = filename;

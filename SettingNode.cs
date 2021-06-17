@@ -61,7 +61,7 @@ namespace Utilities
 					if (property.GetGetMethod().IsStatic)
 						continue;
 					object v = property.GetValue(source, null);
-					if (property.CanWrite && !property.XmlIgnored() && v != null)
+					if (property.CanWrite && property.JsonProperty() && v != null)
 					{
 						if (property.PropertyType.IsAtomic())
 							children.Add(new PropertyLeaf(this, source, property));

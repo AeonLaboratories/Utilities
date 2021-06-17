@@ -1,15 +1,26 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Windows.Forms;
 
 namespace Utilities
 {
-	public class StepTracker
+	public class StepTracker : INotifyPropertyChanged
 	{
-		public string Name;
-		public Step CurrentStep;
-		public Stack<Step> Stack;
-		public TimeSpan LastElapsed;
+		public static StepTracker Default = new StepTracker();
+
+		public event PropertyChangedEventHandler PropertyChanged;
+		public string Name { get; set; }
+
+		public Step CurrentStep
+		{
+			get => currentStep;
+			set { currentStep = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CurrentStep))); }
+		}
+		Step currentStep;
+
+		public Stack<Step> Stack { get; set; }
+		public TimeSpan LastElapsed { get; set; }
 
 		public StepTracker() { }
 
@@ -66,12 +77,29 @@ namespace Utilities
 					return DateTime.Now.Subtract(CurrentStep.StartTime);
 			}
 		}
-	}
+        public override string ToString()
+        {
+            return Description;
+        }
+    }
 
-	public class Step
+	public class Step : INotifyPropertyChanged
 	{
-		public string Description;
-		public DateTime StartTime;
+		public event PropertyChangedEventHandler PropertyChanged;
+
+		public string Description
+		{
+			get => description;
+			set { description = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Description))); }
+		}
+		string description;
+
+		public DateTime StartTime
+		{
+			get => startTime;
+			set { startTime = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StartTime))); }
+		}
+		DateTime startTime;
 
 		public Step() { }
 

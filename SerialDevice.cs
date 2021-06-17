@@ -1,152 +1,381 @@
-﻿using System;
-using System.Collections.Generic;
-using System.IO.Ports;
-using System.Threading;
-using System.Windows.Forms;
-using System.Xml.Serialization;
-using System.Text.RegularExpressions;
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
+using System;
+using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.IO.Ports;
+using System.Runtime.CompilerServices;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
 
 namespace Utilities
 {
-	[JsonObject(MemberSerialization.OptIn)]
-	public class SerialDevice
-	{
+    [JsonObject(MemberSerialization.OptIn)]
+    public class SerialDevice : INotifyPropertyChanged
+    {
+        const int RXBUF_SIZE = 4096;
+
+        // TODO: reconsider this -- automatically triggers a reset; 
+        const int MaxCrcErrors = 3;
+
+        static long InstanceCount = 0;
+
+        #region Device constants
+
         public enum RtsModes { Enabled, Disabled, Toggle }
 
-		static long instanceCount = 0;
+        #endregion Device constants
 
-		#region Fields
-
-		USBSerialPort port;
-
-        bool Transmitting;              // or waiting MillisecondsBetweenMessages or Bytes
-		Stopwatch txSw = new Stopwatch();
-		Stopwatch rxSw = new Stopwatch();
-
-		Queue<string> CommandQ = new Queue<string>();
-		[XmlIgnore] public string LatestCommand;
-
-		Thread txThread;
-		AutoResetEvent txThreadSignal = new AutoResetEvent(false);
-		Thread prxThread;
-		AutoResetEvent prxThreadSignal = new AutoResetEvent(false);
-
-		const int RXBUF_SIZE = 1024;
-		byte[] rx;							// serial receive data buffer
-		Crc rxCrc = null;
-
-        [XmlIgnore] public LogFile Log;
-		[JsonProperty]//, DefaultValue(false)]
-		public bool EscapeLoggedData { get; set; } = false;
-        string Escape(string s)
+        /// <summary>
+        /// Sets the operating mode for the RTS (Request To Send) signal.<br />
+        /// Enabled means set the RTS line to its active state 
+        /// when the device is opened and leave it on. 
+        /// Disabled turns it off instead.<br />
+        /// In Toggle mode, RTS is dynamically turned on when there 
+        /// are bytes in the transmit buffer, and off when the buffer 
+        /// is empty.<br />
+        /// Default is Enabled.
+        /// </summary>
+        [JsonProperty, DefaultValue(RtsModes.Enabled)]
+        public RtsModes RtsMode
         {
+            get => rtsMode;
+            set
+            {
+                rtsMode = value;
+                if (connected && rtsMode == RtsModes.Toggle)
+                    lock (this) Reset();
+                NotifyPropertyChanged();
+            }
+        }
+        RtsModes rtsMode = RtsModes.Enabled;
+
+        [JsonProperty]
+        public SerialPortSettings PortSettings
+        {
+            get => portSettings;
+            set
+            {
+                if (portSettings == value) return;
+                portSettings = value;
+                if (connected) lock (this) Reset();
+                NotifyPropertyChanged();
+            }
+        }
+        SerialPortSettings portSettings;
+
+        /// <summary>
+        /// If CRC is not to be used, leave or set CrcConfig = null
+        /// </summary>
+        [JsonProperty]
+        public CrcOptions CrcConfig
+        {
+            get => crcConfig;
+            set
+            {
+                if (crcConfig == value) return;
+                crcConfig = value;
+                if (connected) lock (this) Reset();
+                NotifyPropertyChanged();
+            }
+        }
+        CrcOptions crcConfig;
+
+        /// <summary>
+        /// Time delay (milliseconds) to insert between transmitted codewords (data+CRC+termchar).
+        /// Use -1 for no delay. Default -1.
+        /// </summary>
+        [JsonProperty, DefaultValue(-1)]
+        public int MillisecondsBetweenMessages
+        {
+            get => millisecondsBetweenMessages;
+            set { millisecondsBetweenMessages = value; NotifyPropertyChanged(); }
+        }
+        int millisecondsBetweenMessages = -1;
+
+        /// <summary>
+        /// Time delay (milliseconds) to insert between transmitted characters.
+        /// Use -1 for no delay. Default -1.
+        /// </summary>
+        [JsonProperty, DefaultValue(-1)]
+        public int MillisecondsBetweenBytes
+        {
+            get => millisecondsBetweenBytes;
+            set { millisecondsBetweenBytes = value; NotifyPropertyChanged(); }
+        }
+        int millisecondsBetweenBytes = -1;
+
+        /// <summary>
+        /// The period of silence (milliseconds) to be interpreted 
+        /// as message termination/completion. Default 5.
+        /// </summary>
+        [JsonProperty, DefaultValue(5)]
+        public int MaximumMillisecondsSilenceInMessage
+        { 
+            get => maximumMillisecondsSilenceInMessage; 
+            set { maximumMillisecondsSilenceInMessage = value; NotifyPropertyChanged(); }
+        }
+        int maximumMillisecondsSilenceInMessage = 5;
+
+        /// <summary>
+        /// If BinaryComms is true, binary sequences are recorded
+        /// in log files as printable strings of hexadecimal byte codes 
+        /// separated by spaces, for example &quot;F3 9A 22 16 03&quot;.
+        /// </summary>
+        [JsonProperty, DefaultValue(false)]
+        public bool BinaryComms
+        { 
+            get => binaryComms; 
+            set { binaryComms = value; NotifyPropertyChanged(); } 
+        }
+        bool binaryComms = false;
+
+        /// <summary>
+        /// If this value is true, transmitted and received data
+        /// is recorded in log files after first "escaping" a 
+        /// minimal set of special characters (\, &quot;, $, 
+        /// whitespace, etc.) by replacing them with their escape 
+        /// codes. This instructs the regular expression engine to 
+        /// interpret the characters literally rather than as 
+        /// metacharacters.
+        /// </summary>
+        [JsonProperty, DefaultValue(false)]
+        public bool EscapeLoggedData 
+        { 
+            get => escapeLoggedData; 
+            set { escapeLoggedData = value; NotifyPropertyChanged(); } 
+        }
+        bool escapeLoggedData = false;
+
+        /// <summary>
+        /// Raised when the port has been successfully 
+        /// opened and configured.
+        /// </summary>
+        public event EventHandler Connected;
+
+        /// <summary>
+        /// Raised when the the port is about to disconnect
+        /// or if an unexpected disconnection occurs.
+        /// </summary>
+        public event EventHandler Disconnecting;
+
+        public event PropertyChangedEventHandler PropertyChanged;
+
+        /// <summary>
+        /// Recipient methods (handlers) for messages from the device.
+        /// </summary>
+        public Action<string> ResponseReceivedHandler { get; set; }
+
+        /// <summary>
+        // If true, data that fails CRC check will be forwarded to 
+        // ResponseReceived delegate anyway (but unaltered; i.e., 
+        // including any trailing whitespace and CRC code).
+        /// </summary>
+        public bool IgnoreCRCErrors 
+        { 
+            get => ignoreCRCErrors;
+            set { ignoreCRCErrors = value; NotifyPropertyChanged(); }
+        }
+        bool ignoreCRCErrors = false;
+
+        /// <summary>
+        /// A place to record transmitted and received messages,
+        /// and various status conditions for debugging.
+        /// </summary>
+        public LogFile Log
+        {
+            get => log;
+            set
+            {
+                log?.Record($"SerialDevice Log = {value?.FileName}, was {log.FileName}");
+                log?.Close();
+                log = value;
+            }
+        }
+        LogFile log;
+
+        public bool HaveWork => transmitting || !commandQ.IsEmpty;
+
+        /// <summary>
+        /// The port is open and ready to transmit and receive.
+        /// </summary>
+        public bool Ready => port != null && connected;
+
+        /// <summary>
+        /// The device is Ready and doing work.
+        /// </summary>
+        public bool Busy => Ready && HaveWork;
+
+        /// <summary>
+        /// The device is not Ready or there is nothing to do.
+        /// </summary>
+        public bool Idle => !Busy;
+
+        /// <summary>
+        /// The device is Ready but doing nothing.
+        /// </summary>
+        public bool Free => Ready && !HaveWork;
+
+
+        // Debugging and utility aids.
+        public uint ReceiveEvents { get; private set; }
+        public uint ETXCount { get; private set; }
+        public uint ResponseCount { get; private set; }
+        public uint TotalBytesRead { get; private set; }
+        public bool ErrorBufferOverflow { get; private set; }
+        public uint BufferOverflows { get; private set; }
+        public UInt16 RxCrcCode { get; private set; }
+        public bool ErrorCrc { get; private set; }
+        public uint CRCErrors { get; private set; }
+        public uint Resets { get; private set; }
+        public double MillisecondsSinceLastTx => txSw.Elapsed.TotalMilliseconds;
+        public double MillisecondsSinceLastRx => rxSw.Elapsed.TotalMilliseconds;
+        public long LongestSilence => rxSw.Longest;
+
+
+        /////////////////////////////////////////////////
+        /// <summary>
+        /// Accepts a message for transmission.
+        /// </summary>
+        /// <param name="command"></param>
+        /// <returns>true if the device is Ready</returns>
+        public bool Command(string command)
+        {
+            if (string.IsNullOrEmpty(command))
+                return false;
+            Log?.Record($"SerialDevice received Command \"{Escape(command)}\"");
+            commandQ.Enqueue(command);
+            txThreadSignal.Set();   // release txThread block
+            return Ready;
+        }
+
+        /// <summary>
+        /// Closes and releases the port resources.
+        /// </summary>
+        public void Close()
+        {
+            Disconnect();
+        }
+
+        /// <summary>
+        /// Wait until the device is disconnected or has nothing to do.
+        /// </summary>
+        public void WaitForIdle() { while (!Idle) Thread.Sleep(5); }
+
+        /// <summary>
+        /// Disconnects and reconnects the serial port.
+        /// </summary>
+        public void Reset()
+        {
+            Disconnect();
+            Resets++;
+            Connect();
+        }
+
+        /// <summary>
+        /// A utility method that tries to make the string 
+        /// at least somewhat human-friendly.
+        /// </summary>
+        /// <param name="s"></param>
+        /// <returns></returns>
+        public string Escape(string s = "")
+        {
+            if (s == null) s = "";
+            if (BinaryComms)
+                return s.ToByteString();
             if (EscapeLoggedData)
                 return Regex.Escape(s);
             else
                 return s;
         }
 
-        [XmlIgnore] public bool Disconnected = true;
-		[XmlIgnore] public Action<string> ResponseReceived;
-		[XmlIgnore] public bool ErrorCrc = false;
-		[XmlIgnore] public bool ErrorBufferOverflow = false;
 
-		[XmlIgnore] public uint ReceiveEvents = 0;
-		[XmlIgnore] public uint TotalBytesRead = 0;
-		[XmlIgnore] public uint ETXCount = 0;
-		[XmlIgnore] public uint ResponseCount = 0;
 
-		const int MAX_CRC_ERRORS = 3;	// triggers a reset
-		[XmlIgnore] public uint CRCErrors = 0;
-		[XmlIgnore] public uint BufferOverflows = 0;
-		[XmlIgnore] public uint Resets = 0;
-		[XmlIgnore] public UInt16 rxCrcCode = 0;
+        public SerialDevice()
+        {
+            InstanceCount++;
+            rx = new byte[RXBUF_SIZE];
+        }
 
-		#endregion Fields
+        public SerialDevice(SerialPortSettings portSettings) : this()
+        {
+            PortSettings = portSettings;
+        }
 
-		#region Properties
+        public SerialDevice(string portName, int baudRate) :
+            this(new SerialPortSettings(portName, baudRate))
+        { }
 
-		[JsonProperty]
-		public SerialPortSettings PortSettings { get; set; }
-		[JsonProperty]
-		public int MillisecondsBetweenBytes { get; set; }       // time delay between transmitted characters
-		[JsonProperty]
-		public int MillisecondsBetweenMessages { get; set; }    // time delay between transmitted codewords (data+CRC+termchar)
-		[JsonProperty]
-		public CrcOptions CrcConfig { get; set; }               // if CRC is not to be used, leave or set CrcOptions = null
+        public SerialDevice(string portName) :
+            this(new SerialPortSettings(portName))
+        { }
 
-		[JsonProperty]
-		public RtsModes RtsMode { get; set; } = RtsModes.Enabled;
 
-        public long MillisecondsSinceLastTx => txSw.ElapsedMilliseconds;
-		public long MillisecondsSinceLastRx => rxSw.ElapsedMilliseconds;
-		public long LongestSilence => rxSw.Longest;
+        USBSerialPort port;
 
-		public bool Idle => Disconnected || (CommandQ.Count == 0 && !Transmitting);
+        bool connected = false;
 
-		public void WaitForIdle() { while (!Idle) Thread.Sleep(5); }
+        /// <summary>
+        /// The threads should keep running.
+        /// </summary>
+        bool active = false;
 
-		#endregion Properties
+        byte[] rx;                          // serial receive data buffer
+        Crc rxCrc = null;
+        Crc txCrc = null;
 
-		public SerialDevice(SerialPortSettings portSettings)
-		{
-			Configure(portSettings);
-		}
+        ConcurrentQueue<string> commandQ = new ConcurrentQueue<string>();
+        bool transmitting;              // or waiting MillisecondsBetweenMessages or Bytes
 
-		public void Configure(SerialPortSettings portSettings)
-		{
-			PortSettings = portSettings;
-		}
+        Thread txThread;
+        AutoResetEvent txThreadSignal = new AutoResetEvent(false);
 
-		public SerialDevice(string portName, int baudRate) :
-			this(new SerialPortSettings(portName, baudRate)) {}
+        Thread rxThread;
+        AutoResetEvent rxThreadSignal = new AutoResetEvent(false);
 
-		public SerialDevice(string portName) :
-			this(new SerialPortSettings(portName)) {}
+        Thread prxThread;
+        AutoResetEvent prxThreadSignal = new AutoResetEvent(false);
 
-		// when empty constructor is used, Configure() and then Initialize() are required before use
-		public SerialDevice() { }
+        Stopwatch txSw = new Stopwatch();
+        Stopwatch rxSw = new Stopwatch();
 
-		public void Initialize()
-		{
-			instanceCount++;
-			Connect();
-			SerialPortMonitor.PortArrived += OnPortConnected;
-			SerialPortMonitor.PortRemoved += OnPortRemoved;
-		}
 
-		void Connect()
-		{
-            port = new USBSerialPort
-            {
-                DiscardNull = false,
-                PortName = PortSettings.PortName,
-                BaudRate = PortSettings.BaudRate,
-                Parity = PortSettings.Parity,
-                DataBits = PortSettings.DataBits,
-                StopBits = PortSettings.StopBits,
-                Handshake = PortSettings.Handshake,
-                ReceivedBytesThreshold = 1,     // redundant; the default is 1
-                ReadTimeout = 20,
-                WriteTimeout = 20,
-                Encoding = Utility.ASCII8Encoding
-			};
-
-            port.DataReceived += new
-				SerialDataReceivedEventHandler(rxDetected);
-            port.PinChanged += new
-                SerialPinChangedEventHandler(PinChanged);
-
+        public void Connect()
+        {
             try
             {
+                if (connected) return;
+                Log?.Record("SerialDevice connecting...");
+
+                SerialPortMonitor.PortArrived -= OnPortConnected;   // avoid duplicates
+                SerialPortMonitor.PortRemoved -= OnPortRemoved;
+                port = new USBSerialPort
+                {
+                    DiscardNull = false,
+                    PortName = PortSettings.PortName,
+                    BaudRate = PortSettings.BaudRate,
+                    Parity = PortSettings.Parity,
+                    DataBits = PortSettings.DataBits,
+                    StopBits = PortSettings.StopBits,
+                    Handshake = PortSettings.Handshake,
+                    ReceivedBytesThreshold = 1,     // redundant; the default is 1
+                    ReadTimeout = 20,
+                    WriteTimeout = 20,
+                    Encoding = EncodingType.ASCII8
+                };
+
+                port.DataReceived += new
+                    SerialDataReceivedEventHandler(RxDetected);
+                port.PinChanged += new
+                    SerialPinChangedEventHandler(PinChanged);
+
                 port.Open();
                 if (port.IsOpen)
                 {
-					Disconnected = false;
+                    port.DiscardOutBuffer();
+                    port.DiscardInBuffer();
 
-					if (RtsMode == RtsModes.Enabled)
+                    if (RtsMode == RtsModes.Enabled)
                         port.RtsEnable = true;
                     else if (RtsMode == RtsModes.Disabled)
                         port.RtsEnable = false;
@@ -154,148 +383,139 @@ namespace Utilities
                         port.SetRtsControlToggle();
                     port.DtrEnable = true;
 
-					// enable this thread to retrieve SerialPort data asynchronously
-					rxThread = new Thread(receive)
-					{
-						Name = $"SerialDevice {instanceCount} receive",
-						IsBackground = true
-					};
-					rxThread.Start();
+                    ClearRxb();
+                    rxCrc = CrcConfig == null ? null : new Crc(CrcConfig);
+                    txCrc = CrcConfig == null ? null : new Crc(CrcConfig);
+                    CRCErrors = 0;
+                    ResponseCount = 0;
 
-					rx = new byte[RXBUF_SIZE];
-					if (CrcConfig != null)
-						rxCrc = new Crc(CrcConfig);
-					if (CrcConfig == null || CrcConfig.OmitTermChar)
-						prxThread = new Thread(process_rx2) { Name = $"SerialDevice {instanceCount} process_rx2" };
-					else
-						prxThread = new Thread(process_rx) { Name = $"SerialDevice {instanceCount} process_rx" };
-					prxThread.IsBackground = true;
-					prxThread.Start();
+                    active = true;  // keep the threads alive
 
-					txThread = new Thread(transmit)
-					{
-						Name = $"SerialDevice {instanceCount} transmit",
-						IsBackground = true
-					};
-					txThread.Start();
-				}
-			}
-			catch { }
-		}
+                    // enable this thread to retrieve SerialPort data asynchronously
+                    rxThread = new Thread(Receive) { Name = $"SerialDevice {InstanceCount} receive", IsBackground = true };
+                    rxThread.Start();
 
-		// Disposing the USBSerialPort makes sure it is registered by Windows 
-		// in HKEY_LOCAL_MACHINE\HARDWARE\DEVICEMAP\SERIALCOMM, so that 
-		// SerialPort.GetPortNames() can re-detect the port.
-		void Disconnect()
-		{
-            Disconnected = true;
-            if (RtsMode == RtsModes.Toggle)
-                port?.ClearRtsControlToggle();
+                    if (CrcConfig == null || CrcConfig.OmitTermChar)
+                        prxThread = new Thread(ProcessRx2) { Name = $"SerialDevice {InstanceCount} process_rx2", IsBackground = true };
+                    else
+                        prxThread = new Thread(ProcessRx) { Name = $"SerialDevice {InstanceCount} process_rx", IsBackground = true };
+                    prxThread.Start();
 
-            port?.Close();
-			port?.Dispose();
-			port = null;
+                    txThread = new Thread(Transmit) { Name = $"SerialDevice {InstanceCount} transmit", IsBackground = true };
+                    txThread.Start();
+
+                    SerialPortMonitor.PortArrived += OnPortConnected;
+                    SerialPortMonitor.PortRemoved += OnPortRemoved;
+                    connected = true;
+                    Log?.Record("...SerialDevice connected.");
+                    Connected?.Invoke(this, null);
+                }
+            }
+            catch { Disconnect(); }
         }
 
-		void OnPortConnected(string portName)
-		{
-			if (portName == PortSettings.PortName)
-				Connect();
-		}
+        // Disposing the USBSerialPort makes sure it is registered by Windows 
+        // in HKEY_LOCAL_MACHINE\HARDWARE\DEVICEMAP\SERIALCOMM, so that 
+        // SerialPort.GetPortNames() can re-detect the port.
+        public void Disconnect()
+        {
+            Log?.Record("SerialDevice disconnecting...");
+            if (connected) Disconnecting?.Invoke(this, null);
+            connected = false;
+            active = false;
 
-		void OnPortRemoved(string portName)
-		{
-			if (portName == PortSettings.PortName)
-				Disconnect();
-		}
+            SerialPortMonitor.PortArrived -= OnPortConnected;
+            SerialPortMonitor.PortRemoved -= OnPortRemoved;
 
-		public bool Command(string command)
-		{
-			if (string.IsNullOrEmpty(command))
-                return false;
-            lock (CommandQ) CommandQ.Enqueue(command);
-			txThreadSignal.Set();   // release txThread block
-			return !Disconnected;
-		}
+            port?.ClearRtsControlToggle();
+            port?.Close();
+            port?.Dispose();
+            port = null;
 
-		public void Reset()
-		{
-			Disconnect();
-			Connect();
-			CRCErrors = 0;
-			Resets++;
-		}
+            txThreadSignal?.Set();
+            rxThreadSignal?.Set();
+            prxThreadSignal?.Set();
+            while (
+                (txThread?.IsAlive ?? false) ||
+                (rxThread?.IsAlive ?? false) ||
+                (prxThread?.IsAlive ?? false)) Thread.Sleep(5);
+            Log?.Record("...SerialDevice disconnected.");
+        }
 
-		public void Close()
-		{
-			Disconnect();	// closes and disposes the port
-		}
+        void OnPortConnected(string portName)
+        {
+            if (PortSettings?.PortName is string s && s == portName)
+                Connect();
+        }
 
-		// run transmit() in non-GUI thread
-		// Paces the character transmission rate so a slower
-		// embedded processor can complete its byte-received ISR
-		// before another character arrives. (This is independent
-		// of baud rate.)
-		void transmit()
-		{
-			try
-			{
-				byte[] tx = { };						// transmit data buffer
-				int txbOut = 0;
-                Crc txCrc = null;
-                if (CrcConfig != null)
-                    txCrc = new Crc(CrcConfig);
-				string command = "";
+        void OnPortRemoved(string portName)
+        {
+            if (PortSettings?.PortName is string s && s == portName)
+                Disconnect();
+        }
+
+        // Optionally paces the transmission rate so a slower
+        // embedded processor can complete its byte-received ISR
+        // before another character arrives. (This is independent
+        // of baud rate.)
+        void Transmit()
+        {
+            Log?.Record($"SerialDevice starting Transmit thread.");
+            try
+            {
+                byte[] tx = { };                        // transmit data buffer
+                int txbOut = 0;
+                string command = "";
                 txSw.Restart();
 
-                while (port != null && !Disconnected)
-				{
-					if (txbOut < tx.Length)
-					{
-						try
-						{
+                while (active)
+                {
+                    if (txbOut < tx.Length)
+                    {
+                        try
+                        {
                             if (MillisecondsBetweenBytes == -1)     // do not pace characters
                             {
                                 if (MillisecondsSinceLastTx >= MillisecondsBetweenMessages)
                                 {
+                                    Log?.Record($"SerialDevice Transmit ({MillisecondsSinceLastTx:0} ms since last): \"{Escape(command)}\"");
                                     port.Write(tx, 0, tx.Length);
-                                    txbOut = tx.Length;
                                     txSw.Restart();
+                                    txbOut = tx.Length;
                                 }
                                 else
-                                    Thread.Sleep(0);
+                                    Thread.Sleep(1);
                             }
                             else
                             {
                                 if (MillisecondsSinceLastTx >= MillisecondsBetweenBytes)
                                 {
+                                    Log?.Record($"SerialDevice Transmit ({MillisecondsSinceLastTx:0} ms since last) 0x{tx[txbOut]:x2} (\'{tx[txbOut]}\')");
                                     port.Write(tx, txbOut++, 1);
                                     txSw.Restart();
                                 }
                                 else
-                                    Thread.Sleep(0);
+                                    Thread.Sleep(1);
                             }
                         }
-                        catch(Exception e)
+                        catch (Exception e)
                         {
                             // ignore port write errors?
-                            Log?.Record("Exception in SerialDevice transmit(): " + e.ToString());
+                            Log?.Record("SerialDevice (transmit) exception: " + e.ToString());
                             // but take a breather
                             Thread.Sleep(Math.Max(20, MillisecondsBetweenMessages));
                         }
                     }
-					else
-					{
-                        Transmitting = false;
-                        LatestCommand = command;
+                    else
+                    {
+                        transmitting = false;
 
-                        if (CommandQ.Count > 0)
+                        if (commandQ.TryDequeue(out command))
                         {
-                            lock (CommandQ) command = CommandQ.Dequeue();
                             txbOut = 0;
-                            if (CrcConfig == null)
+                            if (txCrc == null)
                             {
-                                tx = Utility.ToByteArray(command);
+                                tx = command.ToASCII8ByteArray();
                             }
                             else
                             {
@@ -303,242 +523,289 @@ namespace Utilities
                                 tx = txCrc.Append(command);
                             }
 
-                            Log?.Record("SerialDevice (transmit): " + Escape(command));
-                            Transmitting = true;
+                            transmitting = true;
                         }
                         else
                         {
                             txThreadSignal.WaitOne(1000);   // wait for a command
                         }
                     }
-				}
-			}
-			catch (Exception e) { Notice.Send(e.ToString()); }
-		}
+                }
+            }
+            catch (Exception e) { Notice.Send(e.ToString()); }
+            Log?.Record($"SerialDevice ending Transmit thread.");
+        }
 
-		#region process received bytes
+        #region process received bytes
 
-		///////////////////////////////////////////////////////
-		volatile int Rxb_write = 0;		// place for next byte from receiver
-		int Rxb_head = 0;
+        ///////////////////////////////////////////////////////
+        volatile int Rxb_write = 0;     // place for next byte from receiver
+        int Rxb_head = 0;               // location of first unretrieved byte
 
-		///////////////////////////////////////////////////////
-		// ring buffer pointer movement and state
-		int advance(int p) { return ((p + 1) % RXBUF_SIZE); }
-		int retreat2(int p) { return ((p + RXBUF_SIZE - 2) % RXBUF_SIZE); }
+        ///////////////////////////////////////////////////////
+        // ring buffer pointer movement and state
+        int Advance(int p) { return ((p + 1) % RXBUF_SIZE); }
+        int Retreat2(int p) { return ((p + RXBUF_SIZE - 2) % RXBUF_SIZE); }
 
-		// whether there's room for another byte from the receiver
-		bool RxbFull() { return advance(Rxb_write) == Rxb_head; }
+        int ClearRxb() { Rxb_head = Rxb_write; return Rxb_head; }
 
-		bool RxbEmpty() { return Rxb_head == Rxb_write; }
-
-		int ClearRxb() { Rxb_head = Rxb_write; return Rxb_head; }
-
-		string rxbSequence(int tail)
-		{
-            if (tail > Rxb_head)
+        string RxbSequence(int tail)
+        {
+            if (tail >= Rxb_head)
             {
-                return Utility.ByteArrayToString(rx, Rxb_head, tail - Rxb_head);
+                return rx.ToString(Rxb_head, tail - Rxb_head);
             }
             else
             {
-                return Utility.ByteArrayToString(rx, Rxb_head, RXBUF_SIZE - Rxb_head) +
-                    Utility.ByteArrayToString(rx, 0, tail);
+                return rx.ToString(Rxb_head, RXBUF_SIZE - Rxb_head) +
+                    rx.ToString(0, tail);
             }
-		}
+        }
 
-		void handleCrcError()
-		{
-			ErrorCrc = true;
-			CRCErrors++;
-			if (CRCErrors > MAX_CRC_ERRORS) Reset();
-		}
+        void HandleCrcError()
+        {
+            ErrorCrc = true;
+            CRCErrors++;
+            if (CRCErrors > MaxCrcErrors) Reset();
+        }
 
-		// Scans through the rx buffer, extracts CRC-validated messages,
-		// and sends them to the ResponseReceived delegate.
-		// Runs in its own thread, prxThread.
+        // Scans through the rx buffer, extracts CRC-validated messages,
+        // and sends them to the ResponseReceived delegate.
+        // Runs in its own thread, prxThread.
         // Requires a valid (non-null) CrcConfig
-		void process_rx()
-		{
-			try
-			{
-				int rxb_read = ClearRxb();
-    		    rxCrc.Init();
-				ErrorCrc = false;
+        void ProcessRx()
+        {
+            Log?.Record($"SerialDevice starting ProcessRx thread.");
 
-				int bwuTermChar = 0;  // bytes with unexpected TermChar
-				while (port != null && !Disconnected)
-				{
-					while (rxb_read != Rxb_write)
-					{
-						if (bwuTermChar > 0) bwuTermChar++;
-						byte c = rx[rxb_read];
-						if (c == CrcConfig.TermChar)
-						{
-							ETXCount++;
-							if (rxCrc.Good())
-							{
-								string s = rxbSequence(retreat2(rxb_read));
-								Log?.Record("SerialDevice (process_rx): " + Escape(s.TrimEnd()));
-								ResponseReceived?.Invoke(s);
-								ResponseCount++;
-							}
-							else bwuTermChar = 1;
+            try
+            {
+                int rxb_read = ClearRxb();
+                rxCrc.Init();
+                ErrorCrc = false;
 
-							if (rxCrc.Good() || ErrorCrc)
-							{	// start fresh on the next byte
-								rxb_read = Rxb_head = advance(rxb_read);
-								bwuTermChar = 0;
-								rxCrc.Init();
-								ErrorCrc = false;
-								continue;
-							}
-						}
-						rxCrcCode = rxCrc.Update(c);
-						rxb_read = advance(rxb_read);
-
-						if (!ErrorCrc && bwuTermChar > 2)
-						{
-							handleCrcError();
-							Log?.Record(Escape(rxbSequence(rxb_read)) + " [CRC Error]");
-						}
-					}
-					if (ErrorBufferOverflow)
-					{
-						handleCrcError();
-						rxb_read = ClearRxb();
-					}
-					// wait here until something more comes in
-					prxThreadSignal.WaitOne();      // wait for signal to be set (by receive())
-				}
-			}
-			catch (Exception e) { Notice.Send(e.ToString()); }
-		}
-
-		// No TermChar; this version detects end of message by a period of silence.
-		void process_rx2()
-		{
-			try
-			{
-				bool startFresh = true;
-				int rxb_read = 0;
-
-				while (port != null && !Disconnected)
-				{
-					bool timedOut = false;
-
-                    if (startFresh)
+                int bwuTermChar = 0;  // bytes with unexpected TermChar
+                while (active)
+                {
+                    while (rxb_read != Rxb_write)
                     {
+                        if (bwuTermChar > 0) bwuTermChar++;
+                        byte c = rx[rxb_read];
+                        if (c == CrcConfig.TermChar)
+                        {
+                            ETXCount++;
+                            if (rxCrc.Good())
+                            {
+                                string s = RxbSequence(Retreat2(rxb_read)); // don't include CRC code
+                                Log?.Record("SerialDevice (process_rx): " + Escape(s.TrimEnd()));   // remove trailing whitespace
+                                ResponseReceivedHandler?.Invoke(s);
+                                ResponseCount++;
+                            }
+                            else bwuTermChar = 1;
+
+                            if (rxCrc.Good() || ErrorCrc)
+                            {
+                                if (ErrorCrc && IgnoreCRCErrors)
+                                {
+                                    ResponseReceivedHandler?.Invoke(RxbSequence(rxb_read));
+                                    ResponseCount++;
+                                }
+
+                                // start fresh on the next byte
+                                rxb_read = Rxb_head = Advance(rxb_read);
+                                bwuTermChar = 0;
+                                rxCrc.Init();
+                                ErrorCrc = false;
+                                continue;
+                            }
+                        }
+                        RxCrcCode = rxCrc.Update(c);
+                        rxb_read = Advance(rxb_read);
+
+                        if (!ErrorCrc && bwuTermChar > 2)
+                        {
+                            HandleCrcError();
+                            Log?.Record(Escape(RxbSequence(rxb_read)) + " [CRC Error]");
+                        }
+                    }
+                    if (ErrorBufferOverflow)
+                    {
+                        HandleCrcError();
                         rxb_read = ClearRxb();
-                        rxCrc?.Init();
-                        ErrorCrc = false;
-                        prxThreadSignal.WaitOne();
-                        startFresh = false;
                     }
-                    else
+                    // wait here until something more comes in
+                    prxThreadSignal.WaitOne();
+                }
+            }
+            catch (Exception e) { Notice.Send(e.ToString()); }
+            Log?.Record($"SerialDevice ending ProcessRx thread.");
+        }
+
+        // No TermChar; this version detects end of message by a period of silence.
+        // the rx buffer is expected to contain a whole message
+        void ProcessRx2()
+        {
+            Log?.Record($"SerialDevice starting ProcessRx2 thread.");
+            try
+            {
+                while (prxThreadSignal.WaitOne() && active)
+                {
+                    var tail = Rxb_write;
+
+                    if (ErrorBufferOverflow)
                     {
-                        // Once the beginning of a message has arrived, if more than 5 milliseconds 
-                        // of silence occurs, the message is treated as complete. (If 
-                        // MillisecondsBetweenMessages is less than 5, then that timeout value is
-                        // used instead.)
-                        timedOut = !prxThreadSignal.WaitOne(Math.Min(5, MillisecondsBetweenMessages));
+                        ClearRxb();   // silently discard the (possibly partial) message
+                        continue;
                     }
 
-					if (ErrorBufferOverflow)
-					{
-						// silently discard the (possibly partial) message
-						startFresh = true;
-						continue;
-					}
+                    string s = RxbSequence(tail);
+                    Rxb_head = tail;       // remove message from rx[] in any case
 
-					while (rxb_read != Rxb_write)
-					{
-						if (rxCrc != null)
-                            rxCrcCode = rxCrc.Update(rx[rxb_read]);
-						rxb_read = advance(rxb_read);
-					}
+                    if (rxCrc != null)
+                    {
+                        rxCrc.Init();
+                        ErrorCrc = false;
+                        RxCrcCode = rxCrc.Update(s);
+                        if (rxCrc.Good())
+                            s = s[0..^2];    // remove the CRC
+                    }
 
-					if (timedOut)
-					{
-						if (rxCrc == null || rxCrc.Good())
-						{
-                            string s;
-                            if (rxCrc == null)
-                                s = rxbSequence(rxb_read);
-                            else
-                                s = rxbSequence(retreat2(rxb_read));
-							Log?.Record("SerialDevice (process_rx2): " + Escape(s.TrimEnd()));
-							ResponseReceived?.Invoke(s);
-							ResponseCount++;
-						}
-						else if (!RxbEmpty())
-						{
-							if (rxCrc != null) handleCrcError();
-							Log?.Record("SerialDevice (process_rx2): " + Escape(rxbSequence(rxb_read)) + " [CRC Error]");
-						}
-						startFresh = true;
-					}
-				}
-			}
-			catch (Exception e) { Notice.Send(e.ToString()); }
-		}
+                    if (rxCrc == null || rxCrc.Good())
+                    {
+                        if (s.Length > 0)
+                        {
+                            Log?.Record($"SerialDevice (process_rx2): {Escape(s.TrimEnd())}");
+                            ResponseReceivedHandler?.Invoke(s);
+                            ResponseCount++;
+                        }
+                    }
+                    else        // !rxCrc.Good()
+                    {
+                        HandleCrcError();
+                        Log?.Record($"SerialDevice (process_rx2): \"{Escape(s)}\" [CRC Error]");
+                    }
+                }
+            }
+            catch (Exception e) { Notice.Send(e.ToString()); }
+            Log?.Record($"SerialDevice ending ProcessRx2 thread.");
+        }
 
-		#endregion process received bytes
-
-		// Transfer received bytes from the SerialPort buffer into this 
-		// SerialDevice's rx buffer for processing
-		byte[] readBuffer = new byte[4096];
-		void getRxData()
-		{
-			int n;
-			try { n = port.Read(readBuffer, 0, 4096); }
-			catch { n = 0; }
-			for (int i = 0; i < n; i++)
-			{
-				rxSw.Restart();
-
-				if (ErrorBufferOverflow = RxbFull())    // assignment, not comparison
-					BufferOverflows++;
-				else
-				{
-					rx[Rxb_write] = readBuffer[i];
-					Rxb_write = advance(Rxb_write);
-					TotalBytesRead++;
-				}
-				prxThreadSignal.Set();   // process what was received
-			}
-			//Log?.Record("SerialDevice: TotalBytesRead = " + TotalBytesRead);
-		}
-
-		// option to retrieve SerialPort data asynchronously
-		Thread rxThread;
-		AutoResetEvent rxThreadSignal = new AutoResetEvent(false);
-		void receive()
-		{
-			while (port != null && !Disconnected)
-			{
-				try
-				{
-					rxThreadSignal.WaitOne(100);   // wait for a message
-					getRxData();
-				}
-				catch (Exception e) { Log?.Record($"SerialDevice: {e}"); }
-			}
-		}
+        #endregion process received bytes
 
 
-		// This is an event handler invoked by port, a SerialPort.
-		// Runs in a ThreadPool thread started by the SerialPort.
-		void rxDetected(object sender, SerialDataReceivedEventArgs e)
-		{
-			ReceiveEvents++;
-			//getRxData();			// for synchronous data processing
-			rxThreadSignal.Set();       // grab the data asynchronously
-		}
+        // Transfer received bytes from the SerialPort buffer into this 
+        // SerialDevice's rx buffer for processing
+        static int xferBufferSize = RXBUF_SIZE;
+        byte[] xferBuffer = new byte[xferBufferSize];
+
+        void GetRxData()
+        {
+            Log?.Record($"SerialDevice GetRxData triggered");
+            int n;
+            try { n = port?.Read(xferBuffer, 0, xferBufferSize) ?? 0; }
+            catch { n = 0; }
+            if (n == 0)
+            {
+                Log?.Record($"SerialDevice (GetRxData): Nothing found.");
+                return;
+            }
+            rxSw.Restart();
+
+            // This section copies the data in one or two chunks -- the fewest possible.
+            // Two copy operations are needed if the message will wrap past the end 
+            // of the rx buffer. Block-copying like this is faster than a simple
+            // byte-copy loop, whenever messages are >= 2 bytes long.
+            int availableBytes = Rxb_head > Rxb_write ? Rxb_head - Rxb_write : RXBUF_SIZE - Rxb_write + Rxb_head;
+            if (ErrorBufferOverflow = n > availableBytes)           // assignment, not comparison
+            {
+                // If this ever happens, RXBUF_SIZE is too small; increase it.
+                BufferOverflows++;
+                return;     // the received data is lost; alternative is to wait for room in the rx
+            }
+
+            var end = Rxb_write + n - 1;
+            var twoCopiesNeeded = end >= RXBUF_SIZE;
+            if (twoCopiesNeeded)
+            {
+                end -= RXBUF_SIZE;
+                var firstPart = n - end - 1;
+                Array.Copy(xferBuffer, 0, rx, Rxb_write, firstPart);
+                Array.Copy(xferBuffer, firstPart, rx, 0, end + 1);
+            }
+            else
+                Array.Copy(xferBuffer, 0, rx, Rxb_write, n);
+            Rxb_write = Advance(end);
+
+            TotalBytesRead += (uint)n;
+            // DEBUG CODE
+            //Log?.Record($"SerialDevice (GetRxData): \"{Escape(RxbSequence(Rxb_write))}\" (TotalBytesRead = {TotalBytesRead})");
+            Log?.Record($"SerialDevice (GetRxData): TotalBytesRead = {TotalBytesRead}");
+
+            prxThreadSignal.Set();   // process what was received
+        }
+
+
+        // Serial port data-received signals often arrive several times 
+        // per millisecond, heralding as few as one byte each. This method
+        // gives getRxData longer message fragments to process, with fewer calls.
+        // When a signal arrives, it waits until a silence occurs before calling 
+        // getRxData. This should let getRxData essentially always transfer
+        // whole messages at a time.
+        void Receive()
+        {
+            Log?.Record($"SerialDevice starting Receive thread.");
+
+            bool signalReceived = false;
+            while (active)
+            {
+                try
+                {
+                    // In addition to calling getRxData after signals-plus-silence, this version
+                    // calls getRxData every 500 ms if no signal arrives.
+                    //if (!(signalReceived = rxThreadSignal.WaitOne(signalReceived ? MaxMillisecondsSilenceInMessage : 500)))
+                    //    getRxData();
+
+                    // This version does not call getRxData unless at least one signal arrives.
+                    if (rxThreadSignal.WaitOne(signalReceived ? MaximumMillisecondsSilenceInMessage : 500))
+                        signalReceived = true;
+                    else if (signalReceived)
+                    {
+                        GetRxData();
+                        signalReceived = false;
+                    }
+                }
+                catch (Exception e) { Log?.Record($"SerialDevice (Receive): {e}"); }
+            }
+            Log?.Record($"SerialDevice ending Receive thread.");
+        }
+
+
+        // This is an event handler invoked by port, a SerialPort.
+        // Runs in a ThreadPool thread started by the SerialPort.
+        void RxDetected(object sender, SerialDataReceivedEventArgs e)
+        {
+            ReceiveEvents++;
+            //getRxData();			    // for synchronous data retrieval
+            rxThreadSignal.Set();       // grab the data asynchronously
+        }
 
         void PinChanged(object sender, SerialPinChangedEventArgs e)
         {
-            Log?.Record($"A pin changed: {e.ToString()}");
+            Log?.Record($"SerialDevice: A pin changed: {e}");
         }
+
+        /// <summary>
+        /// Raises the PropertyChanged event.
+        /// </summary>
+        /// <param name="propertyName"></param>
+        protected virtual void NotifyPropertyChanged([CallerMemberName] string propertyName = "") =>
+            NotifyPropertyChanged(this, new PropertyChangedEventArgs(propertyName));
+
+        /// <summary>
+        /// Raises the PropertyChanged event.
+        /// </summary>
+        /// <param name="sender"></param>
+        /// <param name="e"></param>
+        protected virtual void NotifyPropertyChanged(object sender, PropertyChangedEventArgs e) =>
+            PropertyChanged?.Invoke(sender, e);
     }
 }

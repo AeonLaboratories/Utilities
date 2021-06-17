@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -10,10 +11,49 @@ namespace Utilities
 	{
         static List<LogFile> List = new List<LogFile>();
         static Thread FlusherThread;
+		static LogFile()
+		{
+			FlusherThread = new Thread(flusher)
+			{
+				Name = "LogFile Flusher",
+				IsBackground = true
+			};
+			FlusherThread.Start();
+		}
 
-		Queue<string> Q;
+		static void flusher()
+		{
+			try
+			{
+				while (true)
+				{
+					Thread.Sleep(5000); // wait 5 seconds 
+					foreach (var log in List)
+					{
+						try { log.flush(); }
+						catch (Exception e) { Notice.Send(e.ToString()); }
+					}
+				}
+			}
+			catch (Exception e) { Notice.Send(e.ToString()); }
+		}
+
+		ConcurrentQueue<string> Q = new ConcurrentQueue<string>();
 		Stopwatch sw = new Stopwatch();
-        public string FileName { get; private set; } = "Log.txt";
+        public string FileName
+		{
+			get => fileName;
+			set
+			{
+				if (fileName != value)
+				{
+					Close();
+					fileName = value;
+					sw.Restart();
+				}
+			}
+		}
+		string fileName = "Log.txt";
         string FullFileName => LogFolder + FileName;
 
 		public long ElapsedMilliseconds => sw.ElapsedMilliseconds;
@@ -26,47 +66,19 @@ namespace Utilities
 		public string ArchiveFolder { get; set; }
 		public string Header = "";
 
-        static LogFile()
-        {
-            FlusherThread = new Thread(flusher)
-            {
-                Name = "LogFile Flusher",
-                IsBackground = true
-            };
-            FlusherThread.Start();
-        }
-
-        static void flusher()
-        {
-            try
-            {
-                while (true)
-                {
-                    Thread.Sleep(5000); // wait 5 seconds 
-                    foreach(var log in List)
-                    {
-                        try { log.flush(); }
-                        catch { List.Remove(log); }
-                    }
-                }
-            }
-            catch (Exception e) { Notice.Send(e.ToString()); }
-        }
-
 
         public LogFile()
 		{
-			List.Add(this);
 			TimeStampFormat = "MM/dd/yyyy HH:mm:ss.fff\t";
 			LogFolder  = @".\";
 			ArchiveFolder = @"archive\";
+			List.Add(this);
 		}
 
 		public LogFile(string filename, bool archiveDaily) : this()
 		{
 			ArchiveDaily = archiveDaily;
 			FileName = filename;
-			Q = new Queue<string>();
 			sw.Restart();
 		}
 
@@ -85,7 +97,7 @@ namespace Utilities
 		/// <param name="entry"></param>
 		public void Write(string entry)
 		{
-			lock (Q) { Q.Enqueue(entry); }
+			Q.Enqueue(entry);
 			sw.Restart();
 		}
 
@@ -139,25 +151,23 @@ namespace Utilities
 			catch { }
 		}
 
-		Boolean flush()
+		bool flush()
 		{
-			if (Q.Count > 0)
+			if (!Q.IsEmpty)
 			{
-				lock (Q)
+				try
 				{
-					try
-					{
-						if (ArchiveDaily) archive();
-						bool newFile = !File.Exists(FullFileName);
-						StreamWriter logFile = new StreamWriter(FullFileName, true);
-						if (newFile && !string.IsNullOrEmpty(Header))
-							logFile.WriteLine(Header);
-						while (Q.Count > 0)
-							logFile.Write(Q.Dequeue());
-						logFile.Close();
-					}
-					catch { return false; }
+					if (ArchiveDaily) archive();
+					bool newFile = !File.Exists(FullFileName);
+					StreamWriter logFile = new StreamWriter(FullFileName, true);
+					if (newFile && !string.IsNullOrEmpty(Header))
+						logFile.WriteLine(Header);
+					string entry;
+					while (Q.TryDequeue(out entry))
+						logFile.Write(entry);
+					logFile.Close();
 				}
+				catch { return false; }
 			}
 			return true;
 		}

@@ -71,6 +71,10 @@ namespace Utilities
             RtsControlToggleSet = true;
         }
 
+        /// <summary>
+        /// Sets the RTS control mode to Disabled if it's currently
+        /// configured to Toggle; otherwise, does nothing.
+        /// </summary>
         public void ClearRtsControlToggle()
         {
             if (IsOpen && BaseStream != null && RtsControlToggleSet)
@@ -102,7 +106,7 @@ namespace Utilities
             try
             {
                 // Get the Win32 file handle for the port
-                SafeFileHandle _handle = (SafeFileHandle)baseStreamType.GetField("_handle", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(baseStream);
+                SafeFileHandle handle = (SafeFileHandle)baseStreamType.GetField("_handle", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(baseStream);
 
                 // Box the private DCB field
                 object dcb = baseStreamType.GetField("dcb", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(baseStream);
@@ -115,7 +119,7 @@ namespace Utilities
                     Marshal.StructureToPtr(dcb, hGlobal, false);
 
                     // Call SetCommState
-                    if (!SetCommState(_handle, hGlobal))
+                    if (!SetCommState(handle, hGlobal))
                         throw new Win32Exception(Marshal.GetLastWin32Error());
                 }
                 finally

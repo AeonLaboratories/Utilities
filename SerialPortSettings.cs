@@ -13,7 +13,11 @@ namespace Utilities
             get
             {
                 string[] physicalPorts = SerialPort.GetPortNames();
-                Array.Sort(physicalPorts);
+                int[] keys = new int[physicalPorts.Length];
+                int i = 0;
+                foreach (var p in physicalPorts)
+                    keys[i++] = int.Parse(p.Substring(3));
+                Array.Sort(keys, physicalPorts);
                 return (physicalPorts?.Length > 0) ? physicalPorts :
                     new string[] { "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "COM10" };
             }
@@ -26,42 +30,27 @@ namespace Utilities
 
 		static SerialPortSettings() { }
 
-		[XmlAttribute]
+
 		[JsonProperty]
-		public string PortName
-		{
-			get { return _PortName; }
-			set
-			{
-                //foreach (string name in PortNameValues)
-                //{
-                //    if (name == value)
-                //    {
-                        _PortName = value;
-                //        break;
-                //    }
-                //}
-			}
-		}
-		string _PortName;
+		public string PortName { get; set; }
 
 		[JsonProperty]
 		public int BaudRate
 		{
-			get { return _BaudRate; }
+			get { return baudRate; }
 			set
 			{
 				for (int i = 0; i < BaudRateValues.Length; i++)
 				{
 					if (value == BaudRateValues[i])
 					{
-						_BaudRate = value;
+						baudRate = value;
 						break;
 					}
 				}
 			}
 		}
-        int _BaudRate;
+        int baudRate;
 
 		[JsonProperty]
 		public Parity Parity { get; set; }
@@ -69,20 +58,20 @@ namespace Utilities
 		[JsonProperty]
 		public int DataBits
 		{
-			get { return _DataBits; }
+			get { return dataBits; }
 			set
 			{
 				for (int i = 0; i < DataBitsValues.Length; i++)
 				{
 					if (value == DataBitsValues[i])
 					{
-						_DataBits = value;
+						dataBits = value;
 						break;
 					}
 				}
 			}
 		}
-        int _DataBits;
+        int dataBits;
 
 		[JsonProperty]
 		public StopBits StopBits { get; set; }
